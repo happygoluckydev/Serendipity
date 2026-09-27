@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Serendipity.Api</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" Version="1.8.2" />
+    <PackageReference Include="Anthropic" Version="12.50.0" />
+    <PackageReference Include="HotChocolate.AspNetCore" Version="15.1.18" />
+    <PackageReference Include="HotChocolate.Data.EntityFramework" Version="15.1.18" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.9">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- HotChocolate の暗黙の using と名前が重なるもの -->
+    <Using Include="System.IO.Path" Alias="Path" />
+    <Using Include="System.Collections.Generic.KeyNotFoundException" Alias="KeyNotFoundException" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Serendipity.Api.Tests" />
+  </ItemGroup>
+
+</Project>

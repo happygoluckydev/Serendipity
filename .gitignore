@@ -1,0 +1,20 @@
+# .NET
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+
+# ローカルに保存される写真・プレビュー画像
+server/src/Serendipity.Api/data/
+server/src/Serendipity.Api/wwwroot/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+
+.env
+.env.local
+.DS_Store
