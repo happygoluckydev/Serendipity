@@ -180,10 +180,12 @@ public class CityService(
         }
 
         var (x, y) = await ChoosePositionAsync(db, viewer, input.NextToMarkId, CityLayout.Radius(1), ct);
+        var newId = Guid.NewGuid();
+        if (input.NextToMarkId is { } near) (x, y) = await SettleAsync(db, newId, near, x, y, ct);
 
         var mark = new Mark
         {
-            Id = Guid.NewGuid(),
+            Id = newId,
             Shape = input.Shape,
             Genre = input.Genre,
             LinkUrl = url,
@@ -304,6 +306,50 @@ public class CityService(
         var others = nearby.Select(m => new LayoutNode(m.Id, m.SeedX, m.SeedY, CityLayout.Radius(m.Weight))).ToList();
         var anchorNode = new LayoutNode(anchor.Id, anchor.SeedX, anchor.SeedY, CityLayout.Radius(anchor.Weight));
         return CityLayout.PlaceNear(anchorNode, radius, others, Random.Shared.Next());
+    }
+
+    /// <summary>
+    /// 置いた直後に、そのあたりだけをならす。隣とくっつき、周りは少し場所を空ける。
+    /// 範囲の外周の種は動かさないので、遠くの街並みは変わらない。変更は呼び出し側の SaveChanges で保存される。
+    /// </summary>
+    internal async Task<(double X, double Y)> SettleAsync(
+        AppDbContext db, Guid newId, Guid anchorId, double x, double y, CancellationToken ct)
+    {
+        // 隣(anchor)を中心に、新しい種まで含む範囲をならす。
+        var anchor = await db.Marks.AsNoTracking().Where(m => m.Id == anchorId).Select(m => new { m.SeedX, m.SeedY }).FirstAsync(ct);
+        var ax = anchor.SeedX;
+        var ay = anchor.SeedY;
+        var reach = Math.Sqrt((x - ax) * (x - ax) + (y - ay) * (y - ay));
+        var window = Math.Max(CityLayout.Radius(City.WeightCap) * 5, reach + CityLayout.Radius(City.WeightCap) * 2);
+        var nearby = await db.Marks
+            .Where(m => (m.Status == MarkStatus.Public || m.Status == MarkStatus.Pending)
+                && m.SeedX > ax - window && m.SeedX < ax + window && m.SeedY > ay - window && m.SeedY < ay + window)
+            .ToListAsync(ct);
+        var nodes = nearby.Select(m =>
+        {
+            var edge = Math.Max(Math.Abs(m.SeedX - ax), Math.Abs(m.SeedY - ay)) > window * 0.6;
+            return new LayoutNode(m.Id, m.SeedX, m.SeedY, CityLayout.Radius(m.Weight)) { Pinned = edge };
+        }).ToList();
+        var fresh = new LayoutNode(newId, x, y, CityLayout.Radius(1));
+        nodes.Add(fresh);
+
+        var index = nodes.Select((n, i) => (n.Id, i)).ToDictionary(t => t.Id, t => t.i);
+        var ids = nearby.Select(m => m.Id).ToList();
+        var edges = (await db.Adjacencies.AsNoTracking()
+                .Where(a => ids.Contains(a.MarkAId) && ids.Contains(a.MarkBId))
+                .Select(a => new { a.MarkAId, a.MarkBId })
+                .ToListAsync(ct))
+            .Select(e => (index[e.MarkAId], index[e.MarkBId]))
+            .ToList();
+        if (index.TryGetValue(anchorId, out var anchorIndex)) edges.Add((index[newId], anchorIndex));
+
+        CityLayout.Relax(nodes, edges, 60);
+        for (var i = 0; i < nearby.Count; i++)
+        {
+            nearby[i].SeedX = nodes[i].X;
+            nearby[i].SeedY = nodes[i].Y;
+        }
+        return (fresh.X, fresh.Y);
     }
 
     internal static IQueryable<Save> OwnSaves(AppDbContext db, Viewer viewer)

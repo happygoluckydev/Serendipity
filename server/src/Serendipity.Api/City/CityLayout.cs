@@ -6,6 +6,8 @@ public sealed class LayoutNode(Guid id, double x, double y, double r)
     public double X { get; set; } = x;
     public double Y { get; set; } = y;
     public double R { get; set; } = r;
+    /// <summary>動かさない種(部分的にならすときの外周など)。</summary>
+    public bool Pinned { get; set; }
 }
 
 /// <summary>
@@ -28,11 +30,14 @@ public static class CityLayout
     {
         const int steps = 24;
         var start = (seed & 0x7fffffff) % steps * (2 * Math.PI / steps);
-        foreach (var stretch in new[] { 1.0, 1.4, 2.0, 3.0 })
+        // 近い順に一周ずつ試し、誰とも重ならない向きが見つかるまで外へ広げる。
+        // 街の外側まで出れば必ず空きがある。遠くに置いても、あとでばねが隣へ引き寄せる。
+        var stretch = 1.0;
+        (double X, double Y) best = (anchor.X + anchor.R + r, anchor.Y);
+        for (var round = 0; round < 40; round++, stretch *= 1.35)
         {
             var dist = (anchor.R + r) * stretch;
             var bestScore = double.NegativeInfinity;
-            (double X, double Y) best = default;
             for (var i = 0; i < steps; i++)
             {
                 var a = start + i * (2 * Math.PI / steps);
@@ -51,14 +56,18 @@ public static class CityLayout
                     best = (cx, cy);
                 }
             }
-            // 少しの重なりは Relax がほどく。大きく重なるときだけ一段遠くを試す。
-            if (bestScore >= -r * 0.25) return best;
-            if (stretch >= 3.0) return best;
+            // 誰とも重ならなければ、パワー図で区画が必ず残る
+            // (中心間が ri + rj 以上なら、境界は新しい種から ri 以上離れる)。
+            if (bestScore >= 0) return best;
         }
-        return (anchor.X + anchor.R + r, anchor.Y);
+        return best;
     }
 
-    /// <summary>ばねと反発で種の位置をならす。edges は nodes の添字の組。</summary>
+    /// <summary>
+    /// ばねと重なりの解消で種の位置をならす。edges は nodes の添字の組。
+    /// ばね(隣同士を寄せる)と中心への弱い引力は柔らかい力として動かし、
+    /// 重ならないことは毎回そのあとに固い制約として解く。ばねが第三のマークを押しつぶしても重なりが残らない。
+    /// </summary>
     public static void Relax(IList<LayoutNode> nodes, IReadOnlyList<(int A, int B)> edges, int iterations)
     {
         var n = nodes.Count;
@@ -68,53 +77,11 @@ public static class CityLayout
         var maxR = 0.0;
         foreach (var node in nodes) maxR = Math.Max(maxR, node.R);
         var cell = maxR * 2.4;
-        var grid = new Dictionary<(long, long), List<int>>();
 
         for (var it = 0; it < iterations; it++)
         {
             Array.Clear(dx);
             Array.Clear(dy);
-            grid.Clear();
-            for (var i = 0; i < n; i++)
-            {
-                var key = ((long)Math.Floor(nodes[i].X / cell), (long)Math.Floor(nodes[i].Y / cell));
-                if (!grid.TryGetValue(key, out var list)) grid[key] = list = [];
-                list.Add(i);
-            }
-
-            // 重なりの反発。近いセルだけを見る。
-            for (var i = 0; i < n; i++)
-            {
-                var a = nodes[i];
-                var gx = (long)Math.Floor(a.X / cell);
-                var gy = (long)Math.Floor(a.Y / cell);
-                for (var ox = -1; ox <= 1; ox++)
-                for (var oy = -1; oy <= 1; oy++)
-                {
-                    if (!grid.TryGetValue((gx + ox, gy + oy), out var list)) continue;
-                    foreach (var j in list)
-                    {
-                        if (j <= i) continue;
-                        var b = nodes[j];
-                        var vx = b.X - a.X;
-                        var vy = b.Y - a.Y;
-                        var d = Math.Sqrt(vx * vx + vy * vy);
-                        var min = a.R + b.R;
-                        if (d >= min) continue;
-                        if (d < 1e-6)
-                        {
-                            // 完全に重なった点は添字から決まる向きに離す(決定的)。
-                            var ang = (i * 7919 + j * 104729) % 360 * Math.PI / 180;
-                            vx = Math.Cos(ang);
-                            vy = Math.Sin(ang);
-                            d = 1;
-                        }
-                        var push = (min - d) * 0.5 / d;
-                        dx[i] -= vx * push; dy[i] -= vy * push;
-                        dx[j] += vx * push; dy[j] += vy * push;
-                    }
-                }
-            }
 
             // 隣同士のばね。離れすぎたときだけ引き寄せる。
             foreach (var (ia, ib) in edges)
@@ -147,9 +114,69 @@ public static class CityLayout
                     dx[i] *= maxStep / len;
                     dy[i] *= maxStep / len;
                 }
+                if (nodes[i].Pinned) continue;
                 nodes[i].X += dx[i];
                 nodes[i].Y += dy[i];
             }
+
+            ResolveOverlaps(nodes, cell, passes: 2);
+        }
+        ResolveOverlaps(nodes, cell, passes: 12);
+    }
+
+    /// <summary>重なっている組を、互いに半分ずつ押し戻す(その場で順に解く)。</summary>
+    private static void ResolveOverlaps(IList<LayoutNode> nodes, double cell, int passes)
+    {
+        var n = nodes.Count;
+        var grid = new Dictionary<(long, long), List<int>>();
+        for (var pass = 0; pass < passes; pass++)
+        {
+            grid.Clear();
+            for (var i = 0; i < n; i++)
+            {
+                var key = ((long)Math.Floor(nodes[i].X / cell), (long)Math.Floor(nodes[i].Y / cell));
+                if (!grid.TryGetValue(key, out var list)) grid[key] = list = [];
+                list.Add(i);
+            }
+
+            var moved = false;
+            for (var i = 0; i < n; i++)
+            {
+                var a = nodes[i];
+                var gx = (long)Math.Floor(a.X / cell);
+                var gy = (long)Math.Floor(a.Y / cell);
+                for (var ox = -1; ox <= 1; ox++)
+                for (var oy = -1; oy <= 1; oy++)
+                {
+                    if (!grid.TryGetValue((gx + ox, gy + oy), out var list)) continue;
+                    foreach (var j in list)
+                    {
+                        if (j <= i) continue;
+                        var b = nodes[j];
+                        var vx = b.X - a.X;
+                        var vy = b.Y - a.Y;
+                        var d = Math.Sqrt(vx * vx + vy * vy);
+                        var min = a.R + b.R;
+                        if (d >= min) continue;
+                        if (d < 1e-6)
+                        {
+                            // 完全に重なった点は添字から決まる向きに離す(決定的)。
+                            var ang = (i * 7919 + j * 104729) % 360 * Math.PI / 180;
+                            vx = Math.Cos(ang);
+                            vy = Math.Sin(ang);
+                            d = 1;
+                        }
+                        if (a.Pinned && b.Pinned) continue;
+                        // 片方が動かせないときは、もう片方が全部動く。
+                        var share = a.Pinned || b.Pinned ? 1.0 : 0.5;
+                        var push = (min - d) * share / d;
+                        if (!a.Pinned) { a.X -= vx * push; a.Y -= vy * push; }
+                        if (!b.Pinned) { b.X += vx * push; b.Y += vy * push; }
+                        moved = true;
+                    }
+                }
+            }
+            if (!moved) return;
         }
     }
 

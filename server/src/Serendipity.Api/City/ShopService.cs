@@ -129,13 +129,15 @@ public class ShopService(
                     .OrderByDescending(m => m.LastEngagedAt).Select(m => (Guid?)m.Id).FirstOrDefaultAsync(ct);
             }
             var (x, y) = await city.ChoosePositionAsync(db, viewer, anchor, CityLayout.Radius(1), ct);
+            var markId = Guid.NewGuid();
+            if (anchor is not null) (x, y) = await city.SettleAsync(db, markId, anchor.Value, x, y, ct);
 
             var genre = shop.Items
                 .Select(i => Snapshots.Deserialize(i.Save!.SnapshotJson).Genre)
                 .GroupBy(g => g).OrderByDescending(g => g.Count()).First().Key;
             var mark = new Mark
             {
-                Id = Guid.NewGuid(),
+                Id = markId,
                 Shape = MarkShape.Store,
                 Genre = genre,
                 OwnerUserId = user.Id,
